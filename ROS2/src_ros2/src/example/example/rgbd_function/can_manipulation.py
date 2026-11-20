@@ -396,12 +396,14 @@ class CanManipulation(Node):
             raise MotionFailure('Gripper closed without detecting can contact')
         prelift_tool = self.tool_pose(self.joint_positions())[0]
         before = self.snapshot('before-lift', center[:2], can['support_z'])
-        self.feedback('test-lift')
         try:
+            if 'camera_to_arm' not in before:
+                raise MotionFailure('A measured camera transform is required to verify the lift')
+            self.feedback('test-lift')
             self.follow([np.r_[row[:5], jaw] for row in lift])
             after = self.snapshot('after-lift', center[:2], can['support_z'])
             tool, rotation = self.tool_pose(self.joint_positions())
-            if 'camera_to_arm' not in before or 'camera_to_arm' not in after:
+            if 'camera_to_arm' not in after:
                 raise MotionFailure('A measured camera transform is required to verify the lift')
             verification = verify_visual_lift(
                 cv2.imread(before['rgb_path']), cv2.imread(after['rgb_path']),

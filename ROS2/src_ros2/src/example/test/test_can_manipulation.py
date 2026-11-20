@@ -139,9 +139,9 @@ def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path,
 
 
 @pytest.mark.parametrize('contact_request', [275, 345, 400, 435])
-@pytest.mark.parametrize('cancel_during_verification', [False, True])
+@pytest.mark.parametrize('verification_case', ['valid', 'canceled', 'missing_before'])
 def test_pick_and_place_preserve_detected_close_request(
-        monkeypatch, contact_request, cancel_during_verification):
+        monkeypatch, contact_request, verification_case):
     node = planner()
     node.phase, node.held, node.grip_closed = 'rest', None, False
     can = dict(position=[.165, .1374, .1377], bottom_z=.0709, top_z=.2045, support_z=.0709,
@@ -161,21 +161,32 @@ def test_pick_and_place_preserve_detected_close_request(
     node.survey = lambda: can
     node.feedback = lambda phase: setattr(node, 'phase', phase)
     node.event = lambda *args, **kwargs: None
-    node.snapshot = lambda *args: dict(
-        rgb_path='unused', intrinsics=[1, 1, 0, 0],
-        camera_to_arm=np.eye(4).tolist(), can=can)
+
+    def snapshot(*args):
+        image = dict(rgb_path='unused', intrinsics=[1, 1, 0, 0], can=can)
+        if verification_case != 'missing_before':
+            image['camera_to_arm'] = np.eye(4).tolist()
+        return image
+
+    node.snapshot = snapshot
     node.rest = lambda: None
     monkeypatch.setattr(can_manipulation.cv2, 'imread', lambda path: np.zeros((1, 1, 3), np.uint8))
 
     def verify(*args):
-        if cancel_during_verification:
+        if verification_case == 'canceled':
             node.cancel.set()
             node.phase = 'cooling'
         return dict(verified=True, displacement=[0., 0., .035])
 
     monkeypatch.setattr(can_manipulation, 'verify_visual_lift', verify)
 
-    if cancel_during_verification:
+    if verification_case == 'missing_before':
+        with pytest.raises(MotionFailure, match='camera transform'):
+            node.pick()
+        assert node.held is None and not node.grip_closed
+        assert not any(phase == 'test-lift' for phase, jaw in commands)
+        return
+    if verification_case == 'canceled':
         with pytest.raises(MotionFailure, match='canceled'):
             node.pick()
         assert node.held is None and node.phase == 'cooling'
