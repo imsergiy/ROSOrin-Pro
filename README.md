@@ -145,6 +145,8 @@ temperature feedback is lost, the node stops motion and disables arm torque.
 This permits gravity motion and requires physical support and reset. An
 overheated gripper also loses torque at 75 °C. A thermal stop invalidates the
 held-object result.
+An aborted home removes arm torque when feedback still places it inside the
+folded entry profile; the arm can settle onto its support.
 
 A successful pickup requires observed can motion during the test lift.
 The initial detector uses body depth and a known cylindrical shape. At contact,

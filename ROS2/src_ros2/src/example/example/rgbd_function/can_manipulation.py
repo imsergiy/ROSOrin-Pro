@@ -515,11 +515,11 @@ class CanManipulation(Node):
         except Exception:
             with self.hardware_lock:
                 self.cancel.set()
+                self.feedback('unhomed')
                 self.board.bus_servo_stop(list(SERVO_IDS))
                 if self.folded_pose(self.joint_positions()):
                     for servo in (2, 3, 4, 5, 1):
                         self.board.bus_servo_enable_torque(servo, False)
-            self.feedback('unhomed')
             raise
 
     def start(self, operation, action, response):

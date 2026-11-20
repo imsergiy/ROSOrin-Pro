@@ -19,7 +19,7 @@ HELP = {
         'return': 'Place the held can back at its measured source position and rest the arm.',
         'home': 'Park the empty arm at its supported home and verify arm torque is off.',
         'rest': 'Alias for home: park the empty arm and disable arm holding torque.',
-        'stop': 'Cancel motion and hold the current position.',
+        'stop': 'Cancel motion. A folded homing abort also disables arm torque.',
         'image': 'Download an onboard artifact: image ONBOARD_PATH LOCAL_PATH.',
     },
     'usage': 'robot COMMAND [ARGUMENT]',

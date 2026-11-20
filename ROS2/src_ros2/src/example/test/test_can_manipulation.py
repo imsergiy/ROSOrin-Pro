@@ -444,6 +444,40 @@ def test_blocked_cold_pick_stops_without_a_second_home_attempt(tmp_path):
     assert node.cancel.is_set()
 
 
+def test_missing_feedback_cleanup_cannot_enable_a_later_unknown_home(tmp_path):
+    node = homing_node()
+    read_position = node.board.bus_servo_read_position
+
+    def lose_feedback_after_motion(servo):
+        if sum(call[0] == 'position' for call in node.board.calls) >= 2:
+            return None
+        return read_position(servo)
+
+    node.board.bus_servo_read_position = lose_feedback_after_motion
+    with pytest.raises(MotionFailure, match='feedback is missing'):
+        node.home()
+    assert len([call for call in motor_commands(node) if call[0] == 'position']) == 2
+    assert ('stop', list(SERVO_IDS)) in motor_commands(node)
+    assert node.phase == 'unhomed'
+    assert node.cancel.is_set()
+
+    node.board.bus_servo_read_position = read_position
+    node.board.positions = np.array([500, 500, 500, 500, 500, 330])
+    node.board.calls.clear()
+    node.root = tmp_path
+    node.goal_lock = threading.Lock()
+    node.get_logger = lambda: SimpleNamespace(error=lambda message: None)
+    response = node.start_home(None, SimpleNamespace())
+    node.worker.join(timeout=2.)
+    assert not node.worker.is_alive()
+    assert response.success
+    assert not node.cancel.is_set()
+    assert node.result['success'] is False
+    assert 'folded entry profile' in node.result['error']
+    assert node.phase == 'unhomed'
+    assert not motor_commands(node)
+
+
 def test_cold_survey_establishes_supported_home_before_outward_route():
     node = homing_node()
     events = []
