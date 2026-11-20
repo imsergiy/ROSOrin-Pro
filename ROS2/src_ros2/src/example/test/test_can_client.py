@@ -82,6 +82,7 @@ class CanClientTest(unittest.TestCase):
 
     def test_status_and_place_keep_their_service_arguments(self):
         cases = (('status', (), None),
+                 ('home', (), None),
                  ('place', ('{"frame":"arm_base"}',), '{"frame":"arm_base"}'))
         for command, operands, expected in cases:
             with self.subTest(command=command):

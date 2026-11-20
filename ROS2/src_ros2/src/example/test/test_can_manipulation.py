@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from example.rgbd_function.can_manipulation import CanManipulation, MotionFailure
+from example.rgbd_function.can_manipulation import (
+    CanManipulation, FOLDED_ENTRY, MotionFailure, REST, SERVO_IDS)
 from example.rgbd_function import can_manipulation
 from kinematics.forward_kinematics import ForwardKinematics
 
@@ -283,3 +284,183 @@ def test_warm_recovery_can_unload_below_critical_temperature():
         node.health()
     node.phase = 'recovering'
     node.health()
+
+
+class HomeBoard:
+    def __init__(self, positions=FOLDED_ENTRY):
+        self.positions = np.array(positions, copy=True)
+        self.temperatures = [28]*6
+        self.torque = [0]*6
+        self.calls = []
+        self.block_shoulder = False
+        self.ignore_disable = None
+        self.drift_after_disable = None
+
+    def bus_servo_set_position(self, duration, positions):
+        goal = self.positions.copy()
+        for servo, position in positions:
+            goal[SERVO_IDS.index(servo)] = position
+        self.calls.append(('position', duration, goal.tolist()))
+        if self.block_shoulder:
+            goal[1] = self.positions[1]
+        self.positions = goal
+
+    def bus_servo_enable_torque(self, servo, enabled):
+        self.calls.append(('torque', servo, enabled))
+        if enabled or servo != self.ignore_disable:
+            self.torque[SERVO_IDS.index(servo)] = int(enabled)
+        if not any(self.torque[:5]) and self.drift_after_disable is not None:
+            self.positions += self.drift_after_disable
+            self.drift_after_disable = None
+
+    def bus_servo_read_position(self, servo):
+        value = int(self.positions[SERVO_IDS.index(servo)])
+        self.calls.append(('position_read', servo, value))
+        return [value]
+
+    def bus_servo_read_temp(self, servo):
+        return [self.temperatures[SERVO_IDS.index(servo)]]
+
+    def bus_servo_read_vin(self, servo):
+        return [12000]
+
+    def bus_servo_read_torque_state(self, servo):
+        value = self.torque[SERVO_IDS.index(servo)]
+        self.calls.append(('torque_read', servo, value))
+        return [value]
+
+    def bus_servo_stop(self, servos):
+        self.calls.append(('stop', list(servos)))
+
+
+def homing_node(positions=FOLDED_ENTRY):
+    node = planner()
+    node.board = HomeBoard(positions)
+    node.joint_positions = CanManipulation.joint_positions.__get__(node)
+    node.phase, node.held, node.grip_closed = 'unhomed', None, False
+    node.run, node.worker = None, None
+    node.last_health = 0.
+    node.motion_started = False
+    node.pause = lambda seconds: node.check_cancel()
+    return node
+
+
+def motor_commands(node):
+    return [call for call in node.board.calls if call[0] in ('position', 'torque', 'stop')]
+
+
+def test_manual_fold_homes_directly_without_raising_shoulder():
+    node = homing_node()
+    node.home()
+    commands = motor_commands(node)
+    assert commands[0] == ('position', .1, FOLDED_ENTRY.tolist())
+    first_move = next(index for index, call in enumerate(commands[1:], 1)
+                      if call[0] == 'position')
+    assert commands[1:first_move] == [('torque', servo, True) for servo in SERVO_IDS]
+    targets = [call[2] for call in commands if call[0] == 'position']
+    assert all(target[1] <= FOLDED_ENTRY[1] for target in targets)
+    assert targets[-1] == REST.tolist()
+    assert node.phase == 'rest'
+    assert node.board.torque == [0, 0, 0, 0, 0, 1]
+    last_disable = max(index for index, call in enumerate(node.board.calls)
+                       if call[0] == 'torque' and not call[2])
+    after_disable = node.board.calls[last_disable+1:]
+    assert all(('position_read', servo, int(REST[index])) in after_disable
+               for index, servo in enumerate(SERVO_IDS[:5]))
+    assert all(('torque_read', servo, 0) in after_disable for servo in SERVO_IDS[:5])
+
+
+@pytest.mark.parametrize('joint', range(5))
+@pytest.mark.parametrize('direction', [-1, 1])
+def test_home_rejects_unmeasured_corners_inside_old_rest_box(joint, direction):
+    actual = REST.copy()
+    actual[joint] += direction*90
+    assert np.max(np.abs(actual[:5]-REST[:5])) < 110
+    node = homing_node(actual)
+    with pytest.raises(MotionFailure, match='folded entry profile'):
+        node.home()
+    assert not motor_commands(node)
+    assert node.phase == 'unhomed'
+
+
+@pytest.mark.parametrize('condition', ['hot', 'canceled', 'cooling'])
+def test_home_preflight_rejects_before_energizing(condition):
+    node = homing_node()
+    if condition == 'hot':
+        node.board.temperatures[1] = 65
+    elif condition == 'canceled':
+        node.cancel.set()
+    else:
+        node.phase = 'cooling'
+    with pytest.raises(MotionFailure):
+        node.home()
+    assert not motor_commands(node)
+
+
+def test_home_rejects_pose_drift_after_arm_torque_is_off():
+    node = homing_node()
+    node.board.drift_after_disable = np.array([0, 20, 0, 0, 0, 0])
+    with pytest.raises(MotionFailure, match='after torque removal'):
+        node.home()
+    assert node.phase == 'unhomed'
+    assert node.cancel.is_set()
+    assert node.board.positions[1] == REST[1]+20
+    assert node.board.torque[:5] == [0]*5
+
+
+def test_home_requires_measured_torque_shutdown():
+    node = homing_node()
+    node.board.ignore_disable = 3
+    with pytest.raises(MotionFailure, match='after torque removal'):
+        node.home()
+    assert node.phase == 'unhomed'
+    assert node.board.torque[2] == 1
+
+
+def test_blocked_cold_pick_stops_without_a_second_home_attempt(tmp_path):
+    node = homing_node()
+    node.board.block_shoulder = True
+    node.root = tmp_path
+    node.goal_lock = threading.Lock()
+    node.get_logger = lambda: SimpleNamespace(error=lambda message: None)
+    attempts = []
+
+    def home():
+        attempts.append(True)
+        CanManipulation.home(node)
+
+    node.home = home
+    response = node.start('pick', node.pick, SimpleNamespace())
+    node.worker.join(timeout=2.)
+    assert not node.worker.is_alive()
+    assert response.success
+    assert attempts == [True]
+    assert node.result['success'] is False
+    assert 'Joint tracking error' in node.result['error']
+    assert 'recovery_error' not in node.result
+    assert [call for call in motor_commands(node) if call[0] == 'stop'] == [
+        ('stop', list(SERVO_IDS))]
+    assert node.phase == 'unhomed'
+    assert node.cancel.is_set()
+
+
+def test_cold_survey_establishes_supported_home_before_outward_route():
+    node = homing_node()
+    events = []
+    node.event = lambda name, **values: events.append((name, values))
+    can = dict(position=[.165, .1374, .1377])
+    node.snapshot = lambda label: dict(can=can)
+    assert node.survey() == can
+    verified = next(index for index, event in enumerate(events) if event[0] == 'home_verified')
+    preparing = events.index(('phase', dict(phase='preparing')))
+    assert verified < preparing
+    assert events[verified][1]['joints'] == REST.tolist()
+    assert events[verified][1]['sensors']['torque'][:5] == [[0]]*5
+
+
+def test_rest_uses_the_same_home_operation():
+    node = planner()
+    calls = []
+    node.home = lambda: calls.append('home')
+    node.rest()
+    assert calls == ['home']

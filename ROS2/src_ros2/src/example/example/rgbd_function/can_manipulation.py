@@ -32,6 +32,7 @@ from example.rgbd_function.can_perception import detect_can, verify_visual_lift
 SERVO_IDS = (1, 2, 3, 4, 5, 10)
 OPTICAL_ROTATION = np.array([[0., 0., 1.], [-1., 0., 0.], [0., -1., 0.]])
 REST = np.array([331, 99, 393, 214, 401, 330])
+FOLDED_ENTRY = np.array([355, 127, 308, 258, 497, 332])
 SIDE_CLEARANCE = [
     [331, 158, 381, 212, 401, 330],
     [331, 192, 380, 173, 401, 300],
@@ -78,7 +79,7 @@ class CanManipulation(Node):
         self.bridge = CvBridge()
         self.fk = ForwardKinematics(debug=False)
         self.worker = None
-        self.phase = 'rest'
+        self.phase = 'unhomed'
         self.result = None
         self.held = None
         self.run = None
@@ -104,6 +105,7 @@ class CanManipulation(Node):
         self.create_service(Trigger, '~/pick', self.start_pick, callback_group=group)
         self.create_service(SetString, '~/place', self.start_place, callback_group=group)
         self.create_service(Trigger, '~/return', self.return_can, callback_group=group)
+        self.create_service(Trigger, '~/home', self.start_home, callback_group=group)
         self.create_service(Trigger, '~/rest', self.start_rest, callback_group=group)
         self.create_service(Trigger, '~/stop', self.stop, callback_group=group)
         self.create_service(SetString, '~/read', self.read_artifact, callback_group=group)
@@ -149,12 +151,13 @@ class CanManipulation(Node):
             torque = [self.board.bus_servo_read_torque_state(i) for i in SERVO_IDS]
         return {'temperature_c': temperature, 'voltage_mv': voltage, 'torque': torque}
 
-    def health(self):
+    def health(self, *, parking=False):
         self.check_cancel()
         if time.monotonic() - self.last_health < .7:
             return
         sensors = self.sensors()
-        cooling = self.phase in ('recovering', 'parking')
+        self.event('health', **sensors)
+        cooling = parking or self.phase in ('recovering', 'parking')
         limits = [65, 65, 65, 65, 65, 75] if cooling else [62, 62, 62, 62, 62, 70]
         if any(value is None or value[0] >= limit
                for value, limit in zip(sensors['temperature_c'], limits)):
@@ -207,6 +210,8 @@ class CanManipulation(Node):
             with self.hardware_lock:
                 self.check_cancel()
                 self.motion_started = True
+                self.event('joint_command', command=command.tolist(),
+                           duration=duration if attempt == 0 else .35)
                 self.board.bus_servo_set_position(
                     duration if attempt == 0 else .35,
                     list(zip(SERVO_IDS, map(int, command))))
@@ -229,6 +234,22 @@ class CanManipulation(Node):
         count = max(1, int(np.ceil(np.max(np.abs(goal-start))/85.)))
         for fraction in np.linspace(0., 1., count+1)[1:]:
             self.step_joints(np.rint(start+(goal-start)*fraction).astype(int))
+
+    def enable_motion(self, actual):
+        self.health()
+        with self.hardware_lock:
+            self.check_cancel()
+            self.board.bus_servo_set_position(.1, list(zip(SERVO_IDS, map(int, actual))))
+            for servo in SERVO_IDS:
+                self.board.bus_servo_enable_torque(servo, True)
+            self.event('torque_request', enabled=True, joints=actual.tolist())
+
+    @staticmethod
+    def folded_pose(joints):
+        span = REST[:5]-FOLDED_ENTRY[:5]
+        offset = np.asarray(joints)[:5]-FOLDED_ENTRY[:5]
+        fraction = np.clip(np.dot(offset, span)/np.dot(span, span), 0., 1.)
+        return np.max(np.abs(offset-fraction*span)) <= 15
 
     def solve(self, position, pitch, current, wrist=500):
         if not np.all(np.isfinite(position)):
@@ -318,16 +339,10 @@ class CanManipulation(Node):
         return observation
 
     def survey(self):
-        if self.phase == 'rest':
-            actual = self.joint_positions()
-            if np.max(np.abs(actual[:5]-REST[:5])) > 15:
-                raise MotionFailure('Arm is outside its calibrated rest pose')
+        if self.phase in ('unhomed', 'rest'):
+            self.home()
             self.feedback('preparing')
-            with self.hardware_lock:
-                self.check_cancel()
-                self.board.bus_servo_set_position(.1, list(zip(SERVO_IDS, map(int, actual))))
-                for servo in SERVO_IDS:
-                    self.board.bus_servo_enable_torque(servo, True)
+            self.enable_motion(self.joint_positions())
             for joints in SIDE_CLEARANCE:
                 self.move_joints(joints)
         self.feedback('survey')
@@ -348,8 +363,8 @@ class CanManipulation(Node):
         return center+direction*self.contact_offset
 
     def pick(self):
-        if self.phase != 'rest' or self.held is not None or self.grip_closed:
-            raise MotionFailure('Pickup requires an empty gripper at rest')
+        if self.phase not in ('unhomed', 'rest') or self.held is not None or self.grip_closed:
+            raise MotionFailure('Pickup requires an empty gripper at home')
         can = self.survey()
         self.feedback('planning')
         center = np.asarray(can['position'], dtype=float)
@@ -465,18 +480,47 @@ class CanManipulation(Node):
         self.rest()
 
     def rest(self):
+        self.home()
+
+    def home(self):
         if self.held is not None or self.grip_closed:
             raise MotionFailure('Place or return the held can before resting')
+        if self.phase == 'cooling':
+            raise MotionFailure('Arm torque is off; support and reset the arm')
+        actual = self.joint_positions()
+        folded = self.folded_pose(actual)
+        if not folded and self.phase in ('unhomed', 'rest'):
+            raise MotionFailure('Home start pose is outside the verified folded entry profile')
+        self.health(parking=True)
+        path = [REST] if folded else [*reversed(SIDE_CLEARANCE), REST]
         self.feedback('parking')
-        # The side route provides clearance from the known front grasp area.
-        self.move_joints(SIDE_CLEARANCE[-1])
-        for joints in reversed(SIDE_CLEARANCE[:-1]):
-            self.move_joints(joints)
-        self.move_joints(REST)
-        with self.hardware_lock:
-            for servo in (2, 3, 4, 5, 1):
-                self.board.bus_servo_enable_torque(servo, False)
-        self.feedback('rest')
+        try:
+            self.enable_motion(actual)
+            for joints in path:
+                self.move_joints(joints)
+            with self.hardware_lock:
+                self.check_cancel()
+                for servo in (2, 3, 4, 5, 1):
+                    self.board.bus_servo_enable_torque(servo, False)
+            self.pause(.35)
+            settled = self.joint_positions()
+            sensors = self.sensors()
+            if (np.max(np.abs(settled[:5]-REST[:5])) > 15
+                    or any(value is None or value[0] != 0 for value in sensors['torque'][:5])):
+                raise MotionFailure('Supported home could not be verified after torque removal')
+            with self.hardware_lock:
+                self.check_cancel()
+                self.event('home_verified', joints=settled.tolist(), sensors=sensors)
+                self.feedback('rest')
+        except Exception:
+            with self.hardware_lock:
+                self.cancel.set()
+                self.board.bus_servo_stop(list(SERVO_IDS))
+                if self.folded_pose(self.joint_positions()):
+                    for servo in (2, 3, 4, 5, 1):
+                        self.board.bus_servo_enable_torque(servo, False)
+            self.feedback('unhomed')
+            raise
 
     def start(self, operation, action, response):
         with self.goal_lock:
@@ -502,7 +546,8 @@ class CanManipulation(Node):
                     self.result = {'success': False, 'operation': operation, 'error': str(error)}
                     self.get_logger().error(str(error))
                     if (operation == 'pick' and self.motion_started
-                            and not self.cancel.is_set() and self.held is None):
+                            and not self.cancel.is_set() and self.held is None
+                            and self.phase != 'unhomed'):
                         try:
                             self.recover_source()
                             self.rest()
@@ -555,6 +600,9 @@ class CanManipulation(Node):
 
     def start_rest(self, request, response):
         return self.start('rest', self.rest, response)
+
+    def start_home(self, request, response):
+        return self.start('home', self.home, response)
 
     def monitor_hold(self):
         if self.phase == 'rest' and self.held is None and not self.grip_closed:

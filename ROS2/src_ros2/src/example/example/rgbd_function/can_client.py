@@ -17,7 +17,8 @@ HELP = {
         'place': ('Place at a support position. Argument is JSON with frame arm_base '
                   'and position [x,y,z] in meters.'),
         'return': 'Place the held can back at its measured source position and rest the arm.',
-        'rest': 'Rest the empty arm and disable arm holding torque.',
+        'home': 'Park the empty arm at its supported home and verify arm torque is off.',
+        'rest': 'Alias for home: park the empty arm and disable arm holding torque.',
         'stop': 'Cancel motion and hold the current position.',
         'image': 'Download an onboard artifact: image ONBOARD_PATH LOCAL_PATH.',
     },
