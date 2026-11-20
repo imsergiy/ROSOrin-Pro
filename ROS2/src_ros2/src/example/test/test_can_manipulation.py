@@ -104,7 +104,7 @@ def test_snapshot_rejects_different_capture_times_despite_same_arrival(monkeypat
 def test_pick_and_place_preserve_detected_close_request(monkeypatch, contact_request):
     node = planner()
     node.phase, node.held, node.grip_closed = 'rest', None, False
-    can = dict(position=[.165, .1374, .1377], bottom_z=.0709, support_z=.0709,
+    can = dict(position=[.165, .1374, .1377], bottom_z=.0709, top_z=.2045, support_z=.0709,
                height=.1336)
     joints = node.joint_positions().copy()
     commands = []
@@ -148,8 +148,8 @@ def test_pick_and_place_preserve_detected_close_request(monkeypatch, contact_req
     assert place_commands and all(jaw == contact_request for jaw in place_commands)
 
 
-@pytest.mark.parametrize('support_offset', [0., .03])
-def test_placement_verifies_independent_support_height(support_offset):
+@pytest.mark.parametrize('support_offset,rim_offset', [(0., 0.), (.03, 0.), (0., .02)])
+def test_placement_verifies_independent_support_height(support_offset, rim_offset):
     node = planner()
     node.held = dict(pitch=38., jaw_command=345, can=dict(height=.134),
                      can_in_tool=[0., 0., 0.])
@@ -166,14 +166,80 @@ def test_placement_verifies_independent_support_height(support_offset):
     def snapshot(label, expected_xy, support_z=None):
         assert support_z is None, 'Placement must independently measure the support plane'
         return dict(can=dict(position=[.165, .1374, .138],
+                             top_z=.071+support_offset+.134+rim_offset,
                              support_z=.071+support_offset))
 
     node.snapshot = snapshot
     goal = dict(frame='arm_base', position=[.165, .1374, .071])
-    if support_offset:
+    if support_offset or rim_offset:
         with pytest.raises(MotionFailure, match='placement could not be verified'):
             node.place(goal)
         assert not rests
     else:
         node.place(goal)
         assert rests
+
+
+def test_recovery_uses_measured_contact_joints_without_new_ik():
+    node = planner()
+    node.grip_closed = True
+    node.contact_tip = np.array([.18, .15, .17])
+    node.contact_joints = np.array([660, 455, 198, 302, 500, 200])
+    calls = []
+    node.move_joints = lambda goal: calls.append(goal.tolist())
+    node.open_gripper = lambda: calls.append('open')
+    node.feedback = lambda phase: None
+    node.recover_source()
+    assert calls == [[660, 455, 198, 302, 500, 200], 'open']
+    assert not node.grip_closed
+
+
+def monitor_node(temperatures):
+    node = planner()
+    node.phase = 'held'
+    node.held = dict(since=0.)
+    node.grip_closed = True
+    node.worker = None
+    node.sensors = lambda: dict(temperature_c=[[value] for value in temperatures])
+    node.event = lambda *args, **kwargs: None
+    node.feedback = lambda phase: setattr(node, 'phase', phase)
+    return node
+
+
+def test_canceled_hold_cannot_restart_automatically():
+    node = monitor_node([55, 55, 55, 55, 55, 60])
+    node.cancel.set()
+    calls = []
+    node.return_can = lambda *args: calls.append('return')
+    node.monitor_hold()
+    assert not calls
+
+
+@pytest.mark.parametrize('temperatures,jaw_off', [
+    ([28, 66, 30, 30, 30, 30], False), ([28, 28, 30, 30, 30, 76], True)])
+def test_critical_temperature_removes_power_during_unverified_motion(temperatures, jaw_off):
+    node = monitor_node(temperatures)
+    node.phase = 'test-lift'
+    node.held = None
+    node.worker = SimpleNamespace(is_alive=lambda: True)
+    commands = []
+    node.board = SimpleNamespace(
+        bus_servo_stop=lambda ids: commands.append(('stop', ids)),
+        bus_servo_enable_torque=lambda servo, enabled: commands.append((servo, enabled)))
+    node.monitor_hold()
+    assert node.cancel.is_set()
+    assert node.phase == 'cooling'
+    assert commands[0] == ('stop', [1, 2, 3, 4, 5, 10])
+    assert all((servo, False) in commands for servo in (1, 2, 3, 4, 5))
+    assert ((10, False) in commands) == jaw_off
+
+
+def test_warm_recovery_can_unload_below_critical_temperature():
+    node = monitor_node([28, 64, 30, 30, 30, 30])
+    node.sensors = lambda: dict(temperature_c=[[28], [64], [30], [30], [30], [30]],
+                                voltage_mv=[12000])
+    node.last_health = 0.
+    with pytest.raises(MotionFailure, match='cooling'):
+        node.health()
+    node.phase = 'recovering'
+    node.health()

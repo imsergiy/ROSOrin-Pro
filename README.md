@@ -109,6 +109,10 @@ This project is open-source and available for educational and research purposes.
 
 ## Onboard can manipulation
 
+This interface is experimental. Physical tests have not yet produced a verified
+pickup and placement. Current blockers are loaded joint tracking, recovery, and
+intermittent onboard camera USB resets during motion.
+
 The `example` package includes `can_manipulation`, a goal-level ROS 2 interface
 for an upright beverage can. It uses the onboard Aurora RGB-D camera and measured
 servo feedback. Keep the legacy robot controller and other arm demos stopped
@@ -132,6 +136,11 @@ frame with X forward, Y left, and Z up. `stop` cancels the current motion.
 The node returns a held can to its source after 60 seconds or when servo
 temperature reaches the hold limit. A canceled, uncertain grip can be recovered
 with `return` before `rest`.
+Cancellation suppresses automatic return. At 65 °C on an arm servo, or if
+temperature feedback is lost, the node stops motion and disables arm torque.
+This permits gravity motion and requires physical support and reset. An
+overheated gripper also loses torque at 75 °C. A thermal stop invalidates the
+held-object result.
 
 A successful pickup requires observed can motion during the test lift.
 The initial detector uses body depth and a known cylindrical shape. At contact,

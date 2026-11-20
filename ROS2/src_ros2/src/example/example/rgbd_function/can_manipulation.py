@@ -87,6 +87,7 @@ class CanManipulation(Node):
         self.last_health = 0.
         self.grip_closed = False
         self.contact_tip = None
+        self.contact_joints = None
         self.motion_started = False
         group = ReentrantCallbackGroup()
         self.create_subscription(Image, '/depth_cam/rgb0/image_raw',
@@ -153,7 +154,8 @@ class CanManipulation(Node):
         if time.monotonic() - self.last_health < .7:
             return
         sensors = self.sensors()
-        limits = [62, 62, 62, 62, 62, 70]
+        cooling = self.phase in ('recovering', 'parking')
+        limits = [65, 65, 65, 65, 65, 75] if cooling else [62, 62, 62, 62, 62, 70]
         if any(value is None or value[0] >= limit
                for value, limit in zip(sensors['temperature_c'], limits)):
             raise MotionFailure('Servo temperature requires cooling')
@@ -259,7 +261,7 @@ class CanManipulation(Node):
             self.step_joints(joints)
 
     def snapshot(self, label='observation', expected_xy=None, support_z=None):
-        if (self.phase not in ('rest', 'held', 'idle')
+        if (self.worker is not None and self.worker.is_alive()
                 and self.worker is not threading.current_thread()):
             raise MotionFailure('Wait until motion settles before an observation')
         self.pause(.18)
@@ -365,6 +367,7 @@ class CanManipulation(Node):
         self.feedback('gripping')
         contact = self.joint_positions()
         self.contact_tip = self.tool_pose(contact)[0]
+        self.contact_joints = contact.copy()
         self.grip_closed = True
         for jaw in (275, 345, 400, 435):
             contact = self.step_joints(np.r_[contact[:5], jaw])
@@ -402,8 +405,7 @@ class CanManipulation(Node):
         if self.grip_closed and self.contact_tip is not None:
             self.feedback('recovering')
             current = self.joint_positions()
-            self.follow(self.cartesian_path(self.contact_tip, self.pitch,
-                                            int(current[5]), start=current))
+            self.move_joints(np.r_[self.contact_joints[:5], int(current[5])])
             self.open_gripper()
             self.grip_closed = False
 
@@ -427,6 +429,7 @@ class CanManipulation(Node):
         if not -.05 <= position[2] <= .16:
             raise MotionFailure('Support height is outside the manipulation workspace')
         center = position+np.array([0., 0., self.held['can']['height']/2.])
+        can_height = self.held['can']['height']
         current = self.joint_positions()
         seed = self.solve(center, self.held['pitch'], current)
         _, rotation = self.tool_pose(seed)
@@ -449,7 +452,8 @@ class CanManipulation(Node):
         image = self.snapshot('placed-inspection', position[:2])
         if ('can' not in image or np.linalg.norm(
                 np.asarray(image['can']['position'])[:2]-position[:2]) > .02
-                or abs(image['can']['support_z']-position[2]) > .015):
+                or abs(image['can']['support_z']-position[2]) > .015
+                or abs(image['can']['top_z']-can_height-image['can']['support_z']) > .010):
             raise MotionFailure('Release completed but placement could not be verified')
         self.feedback('idle')
         self.rest()
@@ -524,6 +528,10 @@ class CanManipulation(Node):
         return self.start('place', lambda: self.place(goal), response)
 
     def return_can(self, request, response):
+        if self.phase == 'cooling':
+            response.success = False
+            response.message = 'Arm torque is off; support and reset the arm'
+            return response
         if self.held is None and self.grip_closed and self.contact_tip is not None:
             def recover():
                 self.recover_source()
@@ -541,12 +549,33 @@ class CanManipulation(Node):
         return self.start('rest', self.rest, response)
 
     def monitor_hold(self):
-        if self.held is None or (self.worker is not None and self.worker.is_alive()):
+        if self.phase == 'rest' and self.held is None and not self.grip_closed:
             return
         sensors = self.sensors()
+        critical = any(value is None or value[0] >= limit for value, limit in zip(
+            sensors['temperature_c'], [65, 65, 65, 65, 65, 75]))
+        if critical:
+            with self.hardware_lock:
+                self.cancel.set()
+                self.board.bus_servo_stop(list(SERVO_IDS))
+                for servo in (2, 3, 4, 5, 1):
+                    self.board.bus_servo_enable_torque(servo, False)
+                jaw_temp = sensors['temperature_c'][-1]
+                if jaw_temp is None or jaw_temp[0] >= 75:
+                    self.board.bus_servo_enable_torque(10, False)
+            self.held = None
+            self.feedback('cooling')
+            self.event('thermal_stop', sensors=sensors)
+            return
+        if (self.cancel.is_set()
+                or (self.worker is not None and self.worker.is_alive())):
+            return
+        if self.held is None and not self.grip_closed:
+            return
         warming = any(value is None or value[0] >= limit for value, limit in zip(
             sensors['temperature_c'], [55, 55, 55, 55, 55, 63]))
-        if warming or time.monotonic()-self.held['since'] > 60:
+        expired = self.held is not None and time.monotonic()-self.held['since'] > 60
+        if warming or expired:
             self.event('hold_limit', sensors=sensors)
             self.return_can(None, Trigger.Response())
 
