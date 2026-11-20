@@ -344,8 +344,9 @@ class CanManipulation(Node):
             self.home()
             self.feedback('preparing')
             self.enable_motion(self.joint_positions())
+            self.open_gripper()
             for joints in SIDE_CLEARANCE:
-                self.move_joints(joints)
+                self.move_joints(np.r_[joints[:5], 200])
         self.feedback('survey')
         self.move_joints([331, 811, 75, 92, 500, 200])
         for yaw in (500, 650, 350):

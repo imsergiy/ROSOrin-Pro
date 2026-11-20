@@ -515,6 +515,11 @@ def test_cold_survey_establishes_supported_home_before_outward_route():
     assert verified < preparing
     assert events[verified][1]['joints'] == REST.tolist()
     assert events[verified][1]['sensors']['torque'][:5] == [[0]]*5
+    outbound = [event[1]['command'] for event in events[preparing+1:]
+                if event[0] == 'joint_command']
+    first_raise = next(index for index, row in enumerate(outbound) if row[1] > REST[1])
+    assert any(row[5] == 200 for row in outbound[:first_raise])
+    assert all(row[5] == 200 for row in outbound[first_raise:])
 
 
 def test_rest_uses_the_same_home_operation():
