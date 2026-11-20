@@ -137,6 +137,8 @@ and detected can geometry. `return` places a verified held can back on its sourc
 support. `place` accepts JSON with `frame: "arm_base"` and `position: [x,y,z]`
 in meters. The position is the desired bottom center of the can, in the arm base
 frame with X forward, Y left, and Z up. `stop` cancels the current motion.
+Raw camera images remain available when the folded pose cannot be localized;
+the observation then reports the transform error instead of object coordinates.
 The node returns a held can to its source after 60 seconds or when servo
 temperature reaches the hold limit. A canceled, uncertain grip can be recovered
 with `return` before `rest`.

@@ -320,17 +320,17 @@ class CanManipulation(Node):
         observation = {
             'rgb_path': str(rgb_path), 'depth_path': str(depth_path),
             'frame': 'arm_base', 'joints': joints.tolist(),
-            'tool_position': self.tool_pose(joints)[0].tolist(),
             'intrinsics': list(intrinsics), 'time': time.time(),
             'rgb_stamp': rgb_stamp, 'depth_stamp': depth_stamp,
-            'camera_to_arm': self.camera_pose(joints).tolist(),
         }
         try:
+            observation['tool_position'] = self.tool_pose(joints)[0].tolist()
+            observation['camera_to_arm'] = self.camera_pose(joints).tolist()
             observation['can'] = detect_can(
                 bgr, depth_mm, intrinsics, self.camera_pose(joints),
                 expected_xy=expected_xy, radius=self.radius,
                 height=self.height, support_z=support_z)
-        except ValueError as error:
+        except (MotionFailure, ValueError) as error:
             observation['detection_error'] = str(error)
         (directory / f'{label}-{stamp}.json').write_text(json.dumps(observation, indent=2))
         self.last_observation = observation
@@ -401,6 +401,8 @@ class CanManipulation(Node):
             self.follow([np.r_[row[:5], jaw] for row in lift])
             after = self.snapshot('after-lift', center[:2], can['support_z'])
             tool, rotation = self.tool_pose(self.joint_positions())
+            if 'camera_to_arm' not in before or 'camera_to_arm' not in after:
+                raise MotionFailure('A measured camera transform is required to verify the lift')
             verification = verify_visual_lift(
                 cv2.imread(before['rgb_path']), cv2.imread(after['rgb_path']),
                 before['intrinsics'], np.asarray(before['camera_to_arm']),

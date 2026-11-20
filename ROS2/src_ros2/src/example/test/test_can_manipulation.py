@@ -102,8 +102,11 @@ def test_snapshot_rejects_different_capture_times_despite_same_arrival(monkeypat
         node.snapshot()
 
 
-def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path):
+@pytest.mark.parametrize('at_home', [False, True])
+def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path, at_home):
     node = planner()
+    if at_home:
+        node.joint_positions = lambda: REST.copy()
     node.phase, node.worker, node.run = 'cooling', None, None
     node.cancel.set()
     node.frame_lock = threading.Lock()
@@ -124,7 +127,14 @@ def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path)
     monkeypatch.setattr(can_manipulation.time, 'sleep', lambda seconds: None)
     result = node.snapshot()
     assert result['rgb_path'] and result['depth_path']
-    assert result['joints'] == [650, 811, 75, 92, 500, 200]
+    assert result['joints'] == node.joint_positions().tolist()
+    assert len(list(tmp_path.glob('*.jpg'))) == 1
+    assert len(list(tmp_path.glob('*-depth.png'))) == 1
+    if at_home:
+        assert 'camera_to_arm' not in result
+        assert 'kinematic model range' in result['detection_error']
+    else:
+        assert 'camera_to_arm' in result
     assert node.cancel.is_set()
 
 
