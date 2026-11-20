@@ -319,6 +319,7 @@ class CanManipulation(Node):
         cv2.imwrite(str(depth_path), depth_mm)
         observation = {
             'rgb_path': str(rgb_path), 'depth_path': str(depth_path),
+            'depth_scale_m': .001, 'depth_invalid_value': 0,
             'frame': 'arm_base', 'joints': joints.tolist(),
             'intrinsics': list(intrinsics), 'time': time.time(),
             'rgb_stamp': rgb_stamp, 'depth_stamp': depth_stamp,

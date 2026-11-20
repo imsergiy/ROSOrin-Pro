@@ -28,6 +28,9 @@ HELP = {
                   'visual lift verification.'),
     'placement_frame': ('arm_base is centered at the arm rotation axis, X forward, Y left, '
                         'Z up. Placement position describes the bottom center of the can.'),
+    'observation_format': ('Depth PNG is uint16; multiply by depth_scale_m for meters and '
+                           'exclude depth_invalid_value. Intrinsics order is [fx,fy,cx,cy]. '
+                           'camera_to_arm is a 4x4 transform in meters, when available.'),
 }
 
 

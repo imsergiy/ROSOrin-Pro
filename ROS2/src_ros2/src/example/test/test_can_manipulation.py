@@ -121,6 +121,7 @@ def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path,
     node.frames = dict(rgb=(now, image), depth=(now, image), info=(now, info))
     bgr = np.zeros((48, 64, 3), np.uint8)
     depth = np.full((48, 64), 500, np.uint16)
+    depth[0, 0] = 0
     node.bridge = SimpleNamespace(
         imgmsg_to_cv2=lambda msg, desired_encoding: bgr if desired_encoding == 'bgr8' else depth)
     node.event = lambda *args, **kwargs: None
@@ -130,6 +131,9 @@ def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path,
     assert result['joints'] == node.joint_positions().tolist()
     assert len(list(tmp_path.glob('*.jpg'))) == 1
     assert len(list(tmp_path.glob('*-depth.png'))) == 1
+    saved_depth = can_manipulation.cv2.imread(result['depth_path'], -1)
+    assert saved_depth[1, 1]*result['depth_scale_m'] == .5
+    assert saved_depth[0, 0] == result['depth_invalid_value'] == 0
     if at_home:
         assert 'camera_to_arm' not in result
         assert 'kinematic model range' in result['detection_error']
