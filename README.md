@@ -131,7 +131,9 @@ Use `ros2 run example can_client help` to discover the client commands.
 after settling, and confirms that arm holding torque is off. `rest` is an alias.
 An already parked arm is verified without a new position or torque-enable request.
 Pickup uses the same homing routine at startup. Cold startup accepts a narrow
-profile around the measured folded entry; an unknown pose is rejected before
+profile around the measured folded entry. Fresh RGB-D reception is checked at
+home before the outward route; an unavailable camera leaves the arm parked.
+An unknown pose is rejected before
 motor power is enabled. Homing does not change servo encoder calibration.
 `observe` returns onboard RGB/depth artifacts, camera calibration, measured joints,
 and detected can geometry. `return` places a verified held can back on its source

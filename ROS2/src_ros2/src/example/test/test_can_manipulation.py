@@ -536,6 +536,22 @@ def test_cold_survey_establishes_supported_home_before_outward_route():
     assert all(row[5] == 200 for row in outbound[first_raise:])
 
 
+def test_camera_failure_at_home_prevents_outward_motion():
+    node = homing_node()
+
+    def snapshot(label):
+        assert label == 'startup'
+        raise MotionFailure('Fresh synchronized onboard RGB-D frames are unavailable')
+
+    node.snapshot = snapshot
+    with pytest.raises(MotionFailure, match='RGB-D'):
+        node.survey()
+    targets = [call[2] for call in motor_commands(node) if call[0] == 'position']
+    assert all(row[1] <= FOLDED_ENTRY[1] for row in targets)
+    assert node.phase == 'rest'
+    assert node.board.torque[:5] == [0]*5
+
+
 def test_rest_uses_the_same_home_operation():
     node = planner()
     calls = []

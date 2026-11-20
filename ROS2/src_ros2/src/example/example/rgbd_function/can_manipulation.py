@@ -342,6 +342,7 @@ class CanManipulation(Node):
     def survey(self):
         if self.phase in ('unhomed', 'rest'):
             self.home()
+            self.snapshot('startup')
             self.feedback('preparing')
             self.enable_motion(self.joint_positions())
             self.open_gripper()
