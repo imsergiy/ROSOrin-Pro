@@ -95,13 +95,41 @@ def test_snapshot_rejects_different_capture_times_despite_same_arrival(monkeypat
     node.frames = dict(rgb=(10., rgb), depth=(10., depth), info=(10., None))
     clock = [10.]
     monkeypatch.setattr(can_manipulation.time, 'monotonic', lambda: clock[0])
-    node.pause = lambda seconds: clock.__setitem__(0, clock[0]+seconds)
+    monkeypatch.setattr(can_manipulation.time, 'sleep',
+                        lambda seconds: clock.__setitem__(0, clock[0]+seconds))
     with pytest.raises(MotionFailure, match='synchronized'):
         node.snapshot()
 
 
+def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path):
+    node = planner()
+    node.phase, node.worker, node.run = 'cooling', None, None
+    node.cancel.set()
+    node.frame_lock = threading.Lock()
+    node.root = tmp_path
+    node.camera_offset = np.array([-.101, .010, .057])
+    node.observations = []
+    stamp = SimpleNamespace(sec=100, nanosec=0)
+    image = SimpleNamespace(header=SimpleNamespace(stamp=stamp))
+    info = SimpleNamespace(k=[80., 0., 32., 0., 80., 24., 0., 0., 1.])
+    now = can_manipulation.time.monotonic()
+    node.frames = dict(rgb=(now, image), depth=(now, image), info=(now, info))
+    node.bridge = SimpleNamespace(imgmsg_to_cv2=lambda msg, desired_encoding:
+                                 np.zeros((48, 64, 3), np.uint8)
+                                 if desired_encoding == 'bgr8'
+                                 else np.full((48, 64), 500, np.uint16))
+    node.event = lambda *args, **kwargs: None
+    monkeypatch.setattr(can_manipulation.time, 'sleep', lambda seconds: None)
+    result = node.snapshot()
+    assert result['rgb_path'] and result['depth_path']
+    assert result['joints'] == [650, 811, 75, 92, 500, 200]
+    assert node.cancel.is_set()
+
+
 @pytest.mark.parametrize('contact_request', [275, 345, 400, 435])
-def test_pick_and_place_preserve_detected_close_request(monkeypatch, contact_request):
+@pytest.mark.parametrize('cancel_during_verification', [False, True])
+def test_pick_and_place_preserve_detected_close_request(
+        monkeypatch, contact_request, cancel_during_verification):
     node = planner()
     node.phase, node.held, node.grip_closed = 'rest', None, False
     can = dict(position=[.165, .1374, .1377], bottom_z=.0709, top_z=.2045, support_z=.0709,
@@ -126,9 +154,20 @@ def test_pick_and_place_preserve_detected_close_request(monkeypatch, contact_req
         camera_to_arm=np.eye(4).tolist(), can=can)
     node.rest = lambda: None
     monkeypatch.setattr(can_manipulation.cv2, 'imread', lambda path: np.zeros((1, 1, 3), np.uint8))
-    monkeypatch.setattr(can_manipulation, 'verify_visual_lift',
-                        lambda *args: dict(verified=True, displacement=[0., 0., .035]))
 
+    def verify(*args):
+        if cancel_during_verification:
+            node.cancel.set()
+            node.phase = 'cooling'
+        return dict(verified=True, displacement=[0., 0., .035])
+
+    monkeypatch.setattr(can_manipulation, 'verify_visual_lift', verify)
+
+    if cancel_during_verification:
+        with pytest.raises(MotionFailure, match='canceled'):
+            node.pick()
+        assert node.held is None and node.phase == 'cooling'
+        return
     node.pick()
     assert node.held['contact'] == contact_request-25
     assert node.held['jaw_command'] == contact_request

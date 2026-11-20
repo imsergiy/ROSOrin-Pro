@@ -180,8 +180,11 @@ class CanManipulation(Node):
             output.write(json.dumps(record) + '\n')
 
     def feedback(self, phase):
-        self.phase = phase
-        self.event('phase', phase=phase)
+        with self.hardware_lock:
+            if self.phase == 'cooling' and phase != 'cooling':
+                return
+            self.phase = phase
+            self.event('phase', phase=phase)
 
     def step_joints(self, goal, *, correction=True):
         """Move coordinated joints and compensate bounded loaded-position error."""
@@ -264,7 +267,7 @@ class CanManipulation(Node):
         if (self.worker is not None and self.worker.is_alive()
                 and self.worker is not threading.current_thread()):
             raise MotionFailure('Wait until motion settles before an observation')
-        self.pause(.18)
+        time.sleep(.18)
         deadline = time.monotonic()+3.
         while True:
             with self.frame_lock:
@@ -280,7 +283,7 @@ class CanManipulation(Node):
                     break
             if time.monotonic() >= deadline:
                 raise MotionFailure('Fresh synchronized onboard RGB-D frames are unavailable')
-            self.pause(.03)
+            time.sleep(.03)
         joints = self.joint_positions()
         bgr = self.bridge.imgmsg_to_cv2(rgb, desired_encoding='bgr8')
         depth_mm = self.bridge.imgmsg_to_cv2(depth, desired_encoding='passthrough')
@@ -388,17 +391,20 @@ class CanManipulation(Node):
                 before['intrinsics'], np.asarray(before['camera_to_arm']),
                 np.asarray(after['camera_to_arm']), can, tool-prelift_tool)
             measured_center = np.asarray(can['position'])+np.asarray(verification['displacement'])
-            self.held = {
-                'source': can, 'can': {**can, 'position': measured_center.tolist()},
-                'can_in_tool': (rotation.T @ (measured_center-tool)).tolist(),
-                'pitch': self.pitch, 'contact': int(contact[5]), 'jaw_command': jaw,
-                'verification': verification,
-                'since': time.monotonic(),
-            }
-            self.event('verified_lift', held=self.held)
-            self.feedback('held')
+            with self.hardware_lock:
+                self.check_cancel()
+                self.held = {
+                    'source': can, 'can': {**can, 'position': measured_center.tolist()},
+                    'can_in_tool': (rotation.T @ (measured_center-tool)).tolist(),
+                    'pitch': self.pitch, 'contact': int(contact[5]), 'jaw_command': jaw,
+                    'verification': verification,
+                    'since': time.monotonic(),
+                }
+                self.event('verified_lift', held=self.held)
+                self.feedback('held')
         except (MotionFailure, ValueError):
-            self.recover_source()
+            if not self.cancel.is_set():
+                self.recover_source()
             raise
 
     def recover_source(self):
@@ -489,7 +495,9 @@ class CanManipulation(Node):
                 started = time.monotonic()
                 try:
                     action()
-                    self.result = {'success': True, 'operation': operation}
+                    with self.hardware_lock:
+                        self.check_cancel()
+                        self.result = {'success': True, 'operation': operation}
                 except Exception as error:
                     self.result = {'success': False, 'operation': operation, 'error': str(error)}
                     self.get_logger().error(str(error))
@@ -563,8 +571,8 @@ class CanManipulation(Node):
                 jaw_temp = sensors['temperature_c'][-1]
                 if jaw_temp is None or jaw_temp[0] >= 75:
                     self.board.bus_servo_enable_torque(10, False)
-            self.held = None
-            self.feedback('cooling')
+                self.held = None
+                self.feedback('cooling')
             self.event('thermal_stop', sensors=sensors)
             return
         if (self.cancel.is_set()
