@@ -7,7 +7,7 @@ package_name = 'example'
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name],
+    packages=[package_name, package_name + '.rgbd_function'],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -56,6 +56,8 @@ setup(
             'track_object = example.rgbd_function.track_object_node:main',
             'object_classification = example.rgbd_function.object_classification:main',
             'track_and_grab = example.rgbd_function.track_and_grab:main',
+            'can_manipulation = example.rgbd_function.can_manipulation:main',
+            'can_client = example.rgbd_function.can_client:main',
             'vc_object_classification = example.rgbd_function.vc_object_classification:main',
             'vc_track_and_grab = example.rgbd_function.vc_track_and_grab:main',
             'automatic_pick = example.navigation_transport.automatic_pick:main',
