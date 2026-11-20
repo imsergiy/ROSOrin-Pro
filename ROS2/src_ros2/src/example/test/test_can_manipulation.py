@@ -395,6 +395,20 @@ def test_manual_fold_homes_directly_without_raising_shoulder():
     assert all(('torque_read', servo, 0) in after_disable for servo in SERVO_IDS[:5])
 
 
+@pytest.mark.parametrize('powered', [False, True])
+def test_already_parked_home_verifies_without_reenergizing_or_position_requests(powered):
+    settled = REST + np.array([2, -9, 3, 1, -1, 0])
+    node = homing_node(settled)
+    node.board.torque = [int(powered)]*5+[1]
+    node.home()
+    commands = motor_commands(node)
+    assert not any(call[0] == 'position' for call in commands)
+    assert not any(call[0] == 'torque' and call[2] for call in commands)
+    assert node.board.torque == [0, 0, 0, 0, 0, 1]
+    assert node.phase == 'rest'
+    assert np.array_equal(node.board.positions, settled)
+
+
 @pytest.mark.parametrize('joint', range(5))
 @pytest.mark.parametrize('direction', [-1, 1])
 def test_home_rejects_unmeasured_corners_inside_old_rest_box(joint, direction):

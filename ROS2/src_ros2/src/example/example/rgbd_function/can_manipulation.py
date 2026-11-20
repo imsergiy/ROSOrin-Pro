@@ -498,12 +498,19 @@ class CanManipulation(Node):
         if not folded and self.phase in ('unhomed', 'rest'):
             raise MotionFailure('Home start pose is outside the verified folded entry profile')
         self.health(parking=True)
-        path = [REST] if folded else [*reversed(SIDE_CLEARANCE), REST]
+        parked = np.max(np.abs(actual[:5]-REST[:5])) <= 15
+        if parked:
+            path = []
+        elif folded:
+            path = [REST]
+        else:
+            path = [*reversed(SIDE_CLEARANCE), REST]
         self.feedback('parking')
         try:
-            self.enable_motion(actual)
-            for joints in path:
-                self.move_joints(joints)
+            if path:
+                self.enable_motion(actual)
+                for joints in path:
+                    self.move_joints(joints)
             with self.hardware_lock:
                 self.check_cancel()
                 for servo in (2, 3, 4, 5, 1):
