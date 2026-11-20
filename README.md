@@ -106,3 +106,65 @@ This project is open-source and available for educational and research purposes.
 ---
 
 **Hiwonder** - Empowering Innovation in Robotics Education
+
+## Onboard can manipulation
+
+This interface is experimental. Physical tests have not yet produced a verified
+pickup and placement. Current blockers are loaded joint tracking, recovery, and
+intermittent onboard camera USB resets during motion.
+
+The `example` package includes `can_manipulation`, a goal-level ROS 2 interface
+for an upright beverage can. It uses the onboard Aurora RGB-D camera and measured
+servo feedback. Keep the legacy robot controller and other arm demos stopped
+while this node owns the serial port.
+
+Build the existing `example` package with its driver and message dependencies,
+source the workspace and Aurora driver installation, then start:
+
+```bash
+ros2 launch example can_manipulation.launch.py
+```
+
+Use `ros2 run example can_client help` to discover the client commands.
+`pick` starts one pickup attempt. `status` reports progress and a terminal result.
+`home` moves an empty arm to its supported park position, verifies the position
+after settling, and confirms that arm holding torque is off. `rest` is an alias.
+An already parked arm is verified without a new position or torque-enable request.
+Pickup uses the same homing routine at startup. Cold startup accepts a narrow
+profile around the measured folded entry. Fresh RGB-D reception is checked at
+home before the outward route; an unavailable camera leaves the arm parked.
+An unknown pose is rejected before
+motor power is enabled. Homing does not change servo encoder calibration.
+`observe` returns onboard RGB/depth artifacts, camera calibration, measured joints,
+and detected can geometry. `return` places a verified held can back on its source
+support. `place` accepts JSON with `frame: "arm_base"` and `position: [x,y,z]`
+in meters. The position is the desired bottom center of the can, in the arm base
+frame with X forward, Y left, and Z up. `stop` cancels the current motion.
+Raw camera images remain available when the folded pose cannot be localized;
+the observation then reports the transform error instead of object coordinates.
+The node returns a held can to its source after 60 seconds or when servo
+temperature reaches the hold limit. A canceled, uncertain grip can be recovered
+with `return` before `rest`.
+Cancellation suppresses automatic return. At 65 °C on an arm servo, or if
+temperature feedback is lost, the node stops motion and disables arm torque.
+This permits gravity motion and requires physical support and reset. An
+overheated gripper also loses torque at 75 °C. A thermal stop invalidates the
+held-object result.
+An aborted home removes arm torque when feedback still places it inside the
+folded entry profile; the arm can settle onto its support.
+
+A successful pickup requires observed can motion during the test lift.
+The initial detector uses body depth and a known cylindrical shape. At contact,
+the wrist camera is inside the depth sensor's minimum range, so lift verification
+tracks body texture in RGB against the measured camera motion and cylinder model.
+Missing or inconsistent evidence returns a failed result. Placement success also
+requires a new onboard observation after release.
+
+Set the node parameters `can_radius`, `can_height`, `contact_offset`, and
+`camera_offset` for the physical can, jaw pads, and camera mount. The initial
+profile uses a 25 mm radius, 135 mm height, and 32 mm tip-to-contact offset.
+The detector selects the warm-colored body of the can. Initial operation assumes
+an upright can on a horizontal support within the arm workspace.
+
+Development recordings belong in a separate process. The manipulation node
+exposes only its onboard camera artifacts.
