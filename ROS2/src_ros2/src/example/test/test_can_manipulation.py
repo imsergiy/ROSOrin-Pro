@@ -107,6 +107,7 @@ def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path)
     node.cancel.set()
     node.frame_lock = threading.Lock()
     node.root = tmp_path
+    node.radius, node.height = .025, .135
     node.camera_offset = np.array([-.101, .010, .057])
     node.observations = []
     stamp = SimpleNamespace(sec=100, nanosec=0)
@@ -114,10 +115,10 @@ def test_stopped_arm_can_still_supply_onboard_observation(monkeypatch, tmp_path)
     info = SimpleNamespace(k=[80., 0., 32., 0., 80., 24., 0., 0., 1.])
     now = can_manipulation.time.monotonic()
     node.frames = dict(rgb=(now, image), depth=(now, image), info=(now, info))
-    node.bridge = SimpleNamespace(imgmsg_to_cv2=lambda msg, desired_encoding:
-                                 np.zeros((48, 64, 3), np.uint8)
-                                 if desired_encoding == 'bgr8'
-                                 else np.full((48, 64), 500, np.uint16))
+    bgr = np.zeros((48, 64, 3), np.uint8)
+    depth = np.full((48, 64), 500, np.uint16)
+    node.bridge = SimpleNamespace(
+        imgmsg_to_cv2=lambda msg, desired_encoding: bgr if desired_encoding == 'bgr8' else depth)
     node.event = lambda *args, **kwargs: None
     monkeypatch.setattr(can_manipulation.time, 'sleep', lambda seconds: None)
     result = node.snapshot()
